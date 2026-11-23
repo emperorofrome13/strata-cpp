@@ -26,8 +26,13 @@ build build_mx/cpu/weights.obj: cc src/weights.cpp
 build build_mx/cpu/memory.obj: cc src/memory.cpp
 build build_mx/cpu/cpu_moe.obj: cc src/cpu_moe.cpp | src/cpu_moe.h src/tables_host.h
 build build_mx/cpu/cpu_worker.obj: cc src/cpu_worker.cpp | src/cpu_worker.h src/cpu_moe.h
-build build_mx/cpu/cpu_test_api.obj: cc src/cpu_test_api.cpp | src/cpu_moe.h src/cpu_worker.h
+build build_mx/cpu/backend.obj: cc src/backend.cpp | src/backend.h
+build build_mx/cpu/ds_ops.obj: cc src/ds_ops.cpp | src/ds_ops.h
+build build_mx/cpu/ds_mat.obj: cc src/ds_mat.cpp | src/ds_mat.h src/backend.h src/cpu_moe.h
+build build_mx/cpu/glm.obj: cc src/glm.cpp | src/glm.h src/ds_mat.h src/ds_ops.h
+build build_mx/cpu/glm_forward.obj: cc src/glm_forward.cpp | src/glm.h src/ds_mat.h src/ds_ops.h
+build build_mx/cpu/cpu_test_api.obj: cc src/cpu_test_api.cpp | src/cpu_moe.h src/cpu_worker.h src/glm.h src/ds_mat.h src/ds_ops.h
 
-build build_mx/strata_cpu_test.dll: link_dll build_mx/cpu/gguf.obj build_mx/cpu/quant.obj build_mx/cpu/config.obj build_mx/cpu/weights.obj build_mx/cpu/memory.obj build_mx/cpu/cpu_moe.obj build_mx/cpu/cpu_worker.obj build_mx/cpu/cpu_test_api.obj
+build build_mx/strata_cpu_test.dll: link_dll build_mx/cpu/gguf.obj build_mx/cpu/quant.obj build_mx/cpu/config.obj build_mx/cpu/weights.obj build_mx/cpu/memory.obj build_mx/cpu/cpu_moe.obj build_mx/cpu/cpu_worker.obj build_mx/cpu/backend.obj build_mx/cpu/ds_ops.obj build_mx/cpu/ds_mat.obj build_mx/cpu/glm.obj build_mx/cpu/glm_forward.obj build_mx/cpu/cpu_test_api.obj
 
 default build_mx/strata_cpu_test.dll

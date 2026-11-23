@@ -87,6 +87,12 @@ struct Q8K {
 // port of cpu_moe.rs: quantize_q8k. Quantizes `n` values in blocks of 256; a short last block is zero-padded.
 std::vector<Q8K> quantize_q8k(const float* x, size_t n);
 
+// port of cpu_moe.rs: int_dot, as the public function deepseek/mat.rs calls (`crate::cpu_moe::int_dot(ty)`): the
+// integer dot kernel of `ty` for one row against Q8K blocks, or nullptr for a type without one. `n` is the row length
+// in bytes, `nx` the number of Q8K blocks. Reads STRATA_SCALAR on each call, as the Rust function does.
+using IntDotFn = float (*)(const uint8_t* row, size_t n, const Q8K* xq, size_t nx);
+IntDotFn int_dot_kernel(Ty ty);
+
 // port of model.rs: the routed-expert tensors of one layer, as `Model::w.layer(il, ...)` resolves them
 // (`blk.<il>.ffn_gate_exps.weight`, `ffn_up_exps`, `ffn_down_exps`). The tensors point into the mapping of
 // the Gguf the Weights were built from; that Gguf and Weights must outlive this struct.

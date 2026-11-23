@@ -635,7 +635,7 @@ usting_strata` (`cache_dir`, the
 
 ## Not yet ported (tracked in `STRATA_CPP_PLAN.md`)
 
-The MTP draft head (and its fill in the prefill), the EAGLE3 head, `prefill_cached` and `prefill_slots` (serve), `calibrate`,
+(GLM-5.3-Flash's `glm/` was ported on 2026-11-23, see the last section.) The MTP draft head (and its fill in the prefill), the EAGLE3 head, `prefill_cached` and `prefill_slots` (serve), `calibrate`,
 the image path of the prefill, and the StrataFreet integration (W4-B). The hyper-connections, PLE and QSA are ported (W3-E1b),
 with the parity and speed gates open (see W3-E1b). What exists: the build, the GGUF reader,
 the quant reference, the NVRTC loader, `config.rs`, `weights.rs`, `memory.rs`, the CUDA backend (gemv family,
@@ -816,3 +816,78 @@ at cos 1.00000. RustingStrata's decode/prefill/cache machinery is reused where t
   attention print. The `STRATA_INK_DUMP` record is `4*ne+88` floats: the graph writes the pre-MoE `h` and `mix`
   at bytes `8*ne+352` and `8*ne+352+4*ne`; the old `2*ne+88` read truncated the mix. Existing consumers
   (`build/moe_check.py`) read only the prefix and are unchanged.
+
+## GLM-5.3-Flash (`glm5-next`): port of `glm/` (2026-11-23)
+
+RustingStrata 1.2.5 implements GLM-5.3-Flash in `src/glm/` (`mod.rs`: hyperparameters, tensor table, `gpu_defaults`;
+`forward.rs`: the CPU reference forward with GPU dense matvecs, the VRAM expert cache, batching, chunked prefill and
+the k-pool DSA indexer) on top of `src/deepseek/mat.rs` and `src/deepseek/ops.rs`. The first port skipped it; this
+section ports it line by line. Reference notes, the model facts and the formula cross-check against llama.cpp
+`glm5-next.cpp`: `docs/GLM5_NOTES.md`.
+
+Files:
+
+- `src/glm.h`, `src/glm.cpp` (port of `glm/mod.rs`: `GlmConfig::from_gguf`, `n_kda`, `n_dsa`, `expected_tensors`,
+  `validate`, `gpu_defaults`), `src/glm_forward.cpp` (port of `glm/forward.rs`: `GlmModel` and its `new`, `reset`,
+  `step`, `prefill`, `step_opt`, `prefill_chunk`, `kda`, `dsa`, `ffn`, `ffn_batch`, `hc_mix`, `preload_hot`,
+  `prefetch_experts`, `tr`; `max_ctx`, `route_sigmoid`, `l2_norm`).
+- `src/ds_mat.h`, `src/ds_mat.cpp` (port of `deepseek/mat.rs`: `Mat`, `matvec_many`, `matvec_rows`, `vec_f32`,
+  `q8_roundtrip`, and `mod dev` - the per-GPU parts, weight upload, the LRU expert cache with its 16 MB staging slot,
+  `gemv`, `batch_mats`, `rows`).
+- `src/ds_ops.h`, `src/ds_ops.cpp` (port of the `deepseek/ops.rs` functions GLM calls: `rms_norm`, `rms_norm_w`, `Hc`,
+  `hc_coeffs`, `hc_collapse`, `hc_post`, `swiglu_clamp`). `Rope` and `route` (DeepSeek-V4.1 only) are not ported.
+- `src/cpu_moe.h/.cpp`: `int_dot_kernel(Ty)`, the public form of `cpu_moe.rs` `int_dot` that `deepseek/mat.rs` calls
+  (the existing kernel selection, unchanged).
+- `src/capi.cpp`, `src/capi.h`: `sc_load` builds a `GlmModel` for `general.architecture` `glm5-next` or `glm5next`
+  (port of the `main.rs` dispatch of `generate`/`bench`), and every `sc_*` entry dispatches to it.
+- `src/cpu_test_api.cpp`: CPU-only `sctg_*` hooks (open with the GPU path off, step, prefill, reset, validate, and the
+  helpers) for `tests/test_glm_cpu.py`.
+- Build: the four GLM sources join `strata_cpp.dll` (`build.ninja`, `build_mx.ninja`); they and `src/backend.cpp` join
+  `strata_cpu_test.dll` (`build_cpu.ninja`, `build_cpu_mx.ninja`). No new CUDA kernels: the GPU side uses the backend's
+  existing `upload`, `gemv`, `gemvn`, `gemm_dense`, `alloc`, `htod`, `dtoh`, `mem_info`.
+- Tests: `tests/test_glm_cpu.py` (new, CPU), `tests/test_score_glm5.py` (new, GPU parity against the official binary),
+  `tests/sc_env.py` (`SC_MODEL_GLM5`, `SC_GLM5_ALIAS_DIR`).
+
+Deviations from the Rust code:
+
+- **Arch spelling (StrataFreet addition).** 1.2.5 accepts only `general.architecture = glm5-next` and reads
+  `glm5-next.<key>`. llama.cpp and the unsloth GGUFs write `glm5next`; the port accepts both and reads the keys under
+  the file's own spelling. The official binary still needs `glm5-next`, so `tests/test_score_glm5.py` hands it an alias
+  (shard 1 re-serialized with the keys renamed, the other shards hard-linked).
+- **Device state per model.** Rust keeps `deepseek/mat.rs`'s device in a process-wide `OnceLock` (`dev::get()`) and
+  computes on rayon's global pool. The port keeps both in a `DsEnv` the model owns (`Mat` points at it), so `sc_free`
+  releases the VRAM and two handles do not share one budget. The Rust `Mutex` around it is dropped (one thread drives a
+  model). The backend is opened through a factory the caller passes (`capi.cpp`: `CudaBackend::create`), so the same
+  sources build into the CPU-only test DLL. `STRATA_DS_BACKEND=vulkan` is refused (no Vulkan backend in this port).
+- **Environment.** Rust's `gpu_defaults` sets `STRATA_DS_GPU=1`, `STRATA_DS_GPU_FRACTION=0.9` and
+  `STRATA_GLM_PREFETCH=2` in the process environment unless `STRATA_GLM_CPU` is set. A DLL must not change its host's
+  environment, so `glm_gpu_config` applies the same defaults to the values it reads. The switches the Rust code reads
+  per call (`STRATA_DS_BATCH`, `STRATA_CPU_REF`, `STRATA_DS_NOEVICT`, `STRATA_DS_LFU`, `STRATA_GLM_CHUNK`,
+  `STRATA_GLM_BATCH`, `STRATA_GLM_PREFETCH`, `STRATA_GLM_ROUTE`, `STRATA_GLM_PROF`, `STRATA_GLM_DUMP`,
+  `STRATA_GLM_PRELOAD`, `STRATA_GLM_PRELOAD_HOST`, `STRATA_GLM_TRACE`) are read once at load. sc_load's `device` is
+  the default of `STRATA_DS_DEVICES` (as `main.rs` hands `--device` to that variable).
+- **Errors instead of panics.** The Rust `.unwrap()`s on device calls and the context `assert!`s panic. Here a failed
+  device call inside a matvec throws `DsError`, which `GlmModel::step`/`prefill` catch and report through
+  `sc_last_error`; the model then refuses further calls until `sc_reset`. The context limit is checked before any state
+  changes (Rust asserts per chunk). The limit is sc_load's `ctx` when given, else `max_ctx` (`STRATA_GLM_CTX`, else the
+  trained context).
+- **Load-time dims check (StrataFreet addition).** The Rust matvec asserts input/output lengths at run time; with raw
+  pointers that would be an out-of-bounds read, so `GlmModel::create` compares the dims of every tensor the forward
+  reads with `expected_tensors()` (trailing 1s ignored) and refuses a mismatch. `from_gguf` also refuses
+  `conv_kernel < 2`, `kpool 0`, `expert_used_count` of 0 or above `expert_count`, and zero head counts or width
+  (values the Rust code divides by or indexes with).
+- **Not ported**, as for every architecture of this DLL: `glm::generate`, `chat`, `serve`, `chat_prompt*`,
+  `parse_calls`, `decode_greedy`, `stop_ids` (tokenization, templates, tool calls and HTTP stay in the host). The
+  sampler of `sc_decode_sample`/`sc_prefill_sample` (temperature, top-k/p, min-p, penalties) works on the GLM logits;
+  RustingStrata's own GLM path is greedy only. `prefetch_expert` is the Rust non-Linux body (a no-op).
+  `sc_save_profile` writes nothing for GLM (glm/forward.rs keeps no profile file); `pin` is refused; the calibration
+  file is not read.
+- **Summation order** follows the Rust iterators everywhere (left folds in f32), rayon's parallel items become
+  `ThreadPool::for_each` items computing the same values; the CPU forward is therefore deterministic, and the chunked
+  prefill equals the token-by-token path bit for bit (checked by `tests/test_glm_cpu.py`).
+
+Verification (2026-11-23, CPU only - the GPU was in use by another job): `build.bat` and `build_cpu.bat` build with no
+warning from the new files; `tests/test_glm_cpu.py` PASS (numbers in `docs/GLM5_NOTES.md`); `test_quant` (26 types),
+`test_sampler` (46 checks) and `test_gguf` (on the synthetic GLM files) PASS; the real UD-IQ1_S tensor table equals
+`expected_tensors()` (1412 tensors, checked from the header). **The GPU path has not run**: `tests/test_score_glm5.py`
+(parity against the official binary, gate argmax >= 97%) is written and waits for the GPU (commands in `HANDOFF.md`).

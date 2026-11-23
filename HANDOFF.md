@@ -4,6 +4,80 @@ Public-ready standalone repository of **strata.cpp**, the C++/CUDA port of Rusti
 decode and prefill path. Built from the read-only internal StrataFreet checkout (the `native/strata_cpp`
 directory of that project); nothing in that project was modified.
 
+## GLM-5.3-Flash port (branch `glm5next`, 2026-11-23) — ported, not yet verified on GPU
+
+Port of RustingStrata 1.2.5's `src/glm/` (+ the `deepseek/mat.rs` and `deepseek/ops.rs` parts it runs on) into
+`src/glm.h`, `src/glm.cpp`, `src/glm_forward.cpp`, `src/ds_mat.{h,cpp}`, `src/ds_ops.{h,cpp}`, wired into the product
+ABI (`sc_load` dispatches on `general.architecture` `glm5-next` / `glm5next`). Deviations: `MODIFICATIONS.md`, last
+section. Model facts, the formula cross-check against llama.cpp `glm5-next.cpp`, what is and is not ported:
+`docs/GLM5_NOTES.md`. Committed on branch `glm5next` only; **not pushed**.
+
+The machine's GPU and most of its RAM were in use by another job, so **no CUDA context was created, no GPU test, no
+`sc_score`/`sc_bench`/`rustingstrata` run, and no GGUF over 1 GB was opened**.
+
+Done and verified (CPU only):
+
+- `build.bat` and `build_cpu.bat` build; the new files add no warnings (the existing `C4189`/`C4458` warnings in
+  `gpu_model.cpp`/`prefill.cpp` are unchanged).
+- `tests/test_glm_cpu.py` (new): **PASS**. Synthetic glm5-next GGUF (n_embd 64, KDA+dense, DSA+MoE, KDA+MoE, DSA+MoE
+  and a NextN block, F32), the C++ CPU forward against an independent float64 numpy forward written from llama.cpp's
+  formulas: 20 positions, max |logit diff| / max |logit| = 6.1e-6, argmax 20/20, k-pool selection active from
+  position 8 (an all-rows reference differs by 4.9e-1); chunked prefill (512 and 3), two consecutive prefills, both
+  arch spellings and 2-4 threads bit-identical to token-by-token; `validate` passes and refuses an extra tensor; the
+  context limit refuses before any state change; unit checks of hc_coeffs, hc_post, route_sigmoid, l2_norm,
+  swiglu_clamp, the f16 rounding (140,009 values), q8_roundtrip and Mat::matvec on Q8_0 weights.
+- Existing CPU tests on small inputs, GPU hidden (`CUDA_VISIBLE_DEVICES=`): `test_quant` PASS (26 types),
+  `test_sampler` PASS (46 checks), `test_gguf` PASS on the two synthetic GLM files. **Not run** (they need the
+  10.5 GB Qwen3.6-14B model, which was not allowed to be opened): `test_weights`, `test_cpu_moe`, `test_cpu_worker`.
+  Without variables all three print SKIP and exit 0. `cpu_moe.cpp` only gained the public `int_dot_kernel` wrapper.
+- The real UD-IQ1_S tensor table (read from the shard headers only) equals `GlmConfig::expected_tensors()`: 1412
+  tensors, no problems; all its quant types are supported.
+- The oracle alias writer of `tests/test_score_glm5.py` was run on the real shard 1 (9.4 MB, metadata only, output in
+  a scratch folder): all 330 metadata entries identical apart from the 40 renamed keys and the arch value.
+
+**Finding:** the unsloth GGUF says `general.architecture = glm5next` (llama.cpp's spelling); RustingStrata 1.2.5 (source
+and the official exe) only takes `glm5-next`. strata-cpp accepts both; `tests/test_score_glm5.py` gives the official
+binary an alias set (shard 1 rewritten, shards 2-3 hard-linked into `build\glm5_alias\`, or `SC_GLM5_ALIAS_DIR` on
+the model's volume).
+
+### To run when the GPU is free (in this order)
+
+```powershell
+Set-Location E:\aiprojects\strata-cpp
+git switch glm5next
+$env:SC_NO_PAUSE = "1"
+& .\build.bat
+& .\build_cpu.bat
+python tests\test_glm_cpu.py
+$env:SC_MODEL_GLM5 = "E:\aiprojects\LM Studio Models\hub\models--unsloth--GLM-5.3-Flash-GGUF\snapshots\2975ab414d30340466d8c51533c6e91f0cca64c1\UD-IQ1_S\GLM-5.3-Flash-UD-IQ1_S-00001-of-00003.gguf"
+$env:SC_RUSTINGSTRATA = "E:\aiprojects\stratafreet\tools\strata125\rustingstrata-windows-x86_64.exe"
+python -c "import sys; sys.path.insert(0, 'tests'); import test_score_glm5 as t; print(t.oracle_model(sys.argv[1]))" $env:SC_MODEL_GLM5
+& $env:SC_RUSTINGSTRATA check --model build\glm5_alias\GLM-5.3-Flash-UD-IQ1_S-00001-of-00003.gguf
+python tests\test_score_glm5.py
+python tests\test_score_glm5.py --n 8 --long --speed
+```
+
+1. The `python -c` line builds the alias for the official binary and prints its path; `check` should print
+   `check: glm5-next ok: 45 layers (34 KDA, 11 DSA) + 1 NextN, 288 experts (8 used), 1412 tensors, tensor table valid`.
+2. `test_score_glm5.py`: 3 prompts x 64 greedy positions; the official `generate` (with `STRATA_GLM_TOP5` /
+   `STRATA_GLM_TRACE`) against `build\sc_score.exe` teacher-forced on its tokens. Gate: argmax >= 97%. Each process
+   needs >= 24 GB of available RAM and holds `.gpu.lock`.
+3. `--long` adds a ~2300-token prompt (past the 2048-row indexer threshold, tens of minutes per side); `--speed`
+   prints the DLL's greedy decode tok/s next to `rustingstrata bench --pp 16 --tg 32` (reported, not gated).
+4. Then run the whole existing suite (section "Next steps" below), which the shared files (`capi.cpp`, `cpu_moe.cpp`,
+   the ninja files) touch: `test_smoke`, `test_backend_*`, `test_score_14b`, `test_cpu_moe`, `test_cpu_worker`,
+   `test_weights` at least.
+
+If parity fails: `STRATA_GLM_DUMP=<dir>` makes both engines append the same per-tensor dumps (`<name>-<layer>.f32`:
+`hc_attn_pre`, `attn_norm`, `kda_q_conv`, `kda_scan_out`, `kv_cmpr`, `attn_out`, `ffn_moe_logits`, `ffn_moe_topk`,
+`ffn_moe_out`, `ffn_shexp`, `l_out`, `result_output`, ...) for a side-by-side diff (use `-n 1` / a one-token
+continuation); `STRATA_GLM_TRACE=1` prints the same values' heads and sums; `STRATA_GLM_BATCH=0`, `STRATA_DS_BATCH=0`
+and `STRATA_GLM_CHUNK=1` switch off the batched paths on both sides; `STRATA_GLM_CPU=1` keeps both on the CPU.
+
+Open items: the GPU path (`ds_mat.cpp` `Dev`: upload, expert cache, staging, batched gemv/gemm) has never run; speed is
+unmeasured; the NextN/MTP block is not used (as in Rust); README status row says "ported, not yet verified on GPU"
+until `test_score_glm5.py` passes.
+
 ## What is in the repository
 
 | Path | Contents |

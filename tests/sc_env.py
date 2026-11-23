@@ -7,6 +7,8 @@ variable is unset the test prints a SKIP line and exits 0.
     SC_MODEL_14B        Qwen3.6-14B-A3B Q6_K GGUF (qwen35moe test model)
     SC_MODEL_FLASHNEXT  Qwen3.8-Flash-Next UD-Q3_K_XL first shard (qwen4exp test model)
     SC_MODEL_INKLING    Inkling-2-Mini IQ3_XXS GGUF (inkling2 test model)
+    SC_MODEL_GLM5       GLM-5.3-Flash first shard, e.g. UD-IQ1_S (glm5-next / glm5next test model)
+    SC_GLM5_ALIAS_DIR   folder on the GLM model's volume for the oracle's arch alias (default build\\glm5_alias)
     SC_GPT_OSS_GGUF     gpt-oss-20b MXFP4 GGUF (real MXFP4 expert rows)
     STRATAFREET_ROOT    StrataFreet checkout (Python reference oracle: quant, gguf_io, tokenizer)
     SC_RUSTINGSTRATA    rustingstrata.exe 1.2.5 (official RustingStrata oracle)
@@ -27,6 +29,7 @@ HINTS = {
     "SC_MODEL_14B": "<path to Qwen3.6-14B-A3B Q6_K gguf>",
     "SC_MODEL_FLASHNEXT": "<path to Qwen3.8-Flash-Next UD-Q3_K_XL first shard gguf>",
     "SC_MODEL_INKLING": "<path to Inkling-2-Mini IQ3_XXS gguf>",
+    "SC_MODEL_GLM5": "<path to GLM-5.3-Flash first shard gguf, e.g. GLM-5.3-Flash-UD-IQ1_S-00001-of-00003.gguf>",
     "SC_GPT_OSS_GGUF": "<path to gpt-oss-20b MXFP4 gguf>",
     "STRATAFREET_ROOT": "<StrataFreet checkout>",
     "SC_RUSTINGSTRATA": "<path to rustingstrata.exe v1.2.5>",

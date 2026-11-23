@@ -305,6 +305,27 @@ where the shape matches.
   resident); `stratafreet/strata_cpp.py` `ARCHS` includes `"inkling2"` so the engine selects this backend
   automatically; `tests/test_score_inkling.py` is the acceptance test.
 
+## 4c. GLM-5.3-Flash (`glm5-next`) — port of `glm/` (added 2026-11-23)
+
+RustingStrata 1.2.5 runs GLM-5.3-Flash outside `Model`/`GpuModel`: a CPU reference forward (`glm/forward.rs`) whose
+dense matvecs and routed experts go to the GPU through `deepseek/mat.rs` (weights resident in VRAM, an LRU expert
+cache keyed by the expert's bytes, a 16 MB staging slot, batched gemvs). The port keeps that structure. Reference
+notes: `docs/GLM5_NOTES.md`.
+
+| Rust | C++ | Notes |
+|---|---|---|
+| `glm/mod.rs` `GlmConfig::from_gguf`, `n_kda`, `n_dsa`, `expected_tensors`, `validate` | `src/glm.cpp` | also accepts llama.cpp's `glm5next` arch spelling |
+| `glm/mod.rs` `gpu_defaults` (+ the `STRATA_DS_*` reads of `dev::get`) | `src/glm.cpp` `glm_gpu_config`, `glm_prefetch_default` | defaults applied to values, the host environment is not changed |
+| `glm/forward.rs` `GlmModel::new`, `reset`, `step`, `prefill`, `step_opt`, `prefill_chunk`, `kda`, `dsa`, `ffn`, `ffn_batch`, `hc_mix`, `preload_hot`, `prefetch_experts`, `tr`, `max_ctx`, `route_sigmoid`, `l2_norm` | `src/glm_forward.cpp` | same order of uploads, same summation order per output |
+| `deepseek/mat.rs` `Mat` (`load`, `group`, `expert`, `row_into`, `matvec`, `prefetch_expert`), `matvec_many`, `matvec_rows`, `vec_f32`, `q8_roundtrip`, `mod dev` (`Dev::*`, `STAGE`, `STAGED`) | `src/ds_mat.cpp` | device state per model (`DsEnv`), not a process-wide `OnceLock` |
+| `deepseek/ops.rs` `rms_norm`, `rms_norm_w`, `Hc`, `hc_coeffs`, `hc_collapse`, `hc_post`, `swiglu_clamp` | `src/ds_ops.cpp` | `Rope` and `route` (DeepSeek only) not ported |
+| `cpu_moe.rs` `int_dot` (public) | `src/cpu_moe.cpp` `int_dot_kernel` | exposes the existing kernel selection |
+| `main.rs` glue (`Cmd::Generate` / `Bench` for `glm5-next`) | `src/capi.cpp` (`sc_load` dispatch, every `sc_*` entry) | `generate`/`chat`/`serve`/templates stay in the host |
+
+No new CUDA kernels: the GPU side uses the backend's existing `gemv`, `gemvn`, `gemm_dense`, `upload`, `htod`/`dtoh`.
+Tests: `tests/test_glm_cpu.py` (CPU, synthetic model, numpy reference), `tests/test_score_glm5.py` (GPU parity
+against the official binary).
+
 ---
 
 ## 5. Threading
@@ -371,7 +392,7 @@ Secondary (dense, for the non-MoE path): a dense Qwen3.5-4B Q8_0 GGUF.
 ## 9. Out of scope, and why
 
 `serve.rs`/`mcp.rs`/`chat.rs`/`tokenizer.rs` (StrataFreet passes token ids), `vision/*`, `hf.rs`,
-`vulkan/*`, `deepseek/*`, `gemma4/*`, `glm/*`, `ngram.rs` (section 7.6), LoRA, multi-GPU split
+`vulkan/*`, `deepseek/*` (except `mat.rs` and the `ops.rs` parts GLM uses, section 4c), `gemma4/*`, `ngram.rs` (section 7.6); `glm/*` was ported on 2026-11-23 (section 4c), LoRA, multi-GPU split
 (`load_split*`, out until single-device parity is reached), MTP drafting (`mtp_*`: optional, and the
 reference bench does not use it).
 

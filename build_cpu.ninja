@@ -25,8 +25,13 @@ build build/cpu/weights.obj: cc src/weights.cpp
 build build/cpu/memory.obj: cc src/memory.cpp
 build build/cpu/cpu_moe.obj: cc src/cpu_moe.cpp | src/cpu_moe.h src/tables_host.h
 build build/cpu/cpu_worker.obj: cc src/cpu_worker.cpp | src/cpu_worker.h src/cpu_moe.h
-build build/cpu/cpu_test_api.obj: cc src/cpu_test_api.cpp | src/cpu_moe.h src/cpu_worker.h
+build build/cpu/backend.obj: cc src/backend.cpp | src/backend.h
+build build/cpu/ds_ops.obj: cc src/ds_ops.cpp | src/ds_ops.h
+build build/cpu/ds_mat.obj: cc src/ds_mat.cpp | src/ds_mat.h src/backend.h src/cpu_moe.h
+build build/cpu/glm.obj: cc src/glm.cpp | src/glm.h src/ds_mat.h src/ds_ops.h
+build build/cpu/glm_forward.obj: cc src/glm_forward.cpp | src/glm.h src/ds_mat.h src/ds_ops.h
+build build/cpu/cpu_test_api.obj: cc src/cpu_test_api.cpp | src/cpu_moe.h src/cpu_worker.h src/glm.h src/ds_mat.h src/ds_ops.h
 
-build build/strata_cpu_test.dll: link_dll build/cpu/gguf.obj build/cpu/quant.obj build/cpu/config.obj build/cpu/weights.obj build/cpu/memory.obj build/cpu/cpu_moe.obj build/cpu/cpu_worker.obj build/cpu/cpu_test_api.obj
+build build/strata_cpu_test.dll: link_dll build/cpu/gguf.obj build/cpu/quant.obj build/cpu/config.obj build/cpu/weights.obj build/cpu/memory.obj build/cpu/cpu_moe.obj build/cpu/cpu_worker.obj build/cpu/backend.obj build/cpu/ds_ops.obj build/cpu/ds_mat.obj build/cpu/glm.obj build/cpu/glm_forward.obj build/cpu/cpu_test_api.obj
 
 default build/strata_cpu_test.dll

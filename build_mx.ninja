@@ -33,8 +33,9 @@ build build_mx/kernel_text.cpp: embed tools/embed_kernels.py kernels/tables.cuh 
 build build_mx/strata_cpp.dll: dll_main src/capi.cpp src/nvrtc.cpp src/gguf.cpp src/quant.cpp $
     src/config.cpp src/weights.cpp src/memory.cpp src/backend.cpp src/cuda_backend.cpp src/cuda_backend_ops.cpp src/cuda_backend_seq.cpp $
     src/model.cpp src/expert_cache.cpp src/gpu_model.cpp src/prefill.cpp src/sampling.cpp src/cpu_moe.cpp src/cpu_worker.cpp $
+    src/ds_ops.cpp src/ds_mat.cpp src/glm.cpp src/glm_forward.cpp $
     build_mx/kernel_text.cpp $
-    | src/capi.h src/nvrtc.h src/backend.h src/cuda_backend.h src/model.h src/expert_cache.h src/gpu_model.h src/sampling.h
+    | src/capi.h src/nvrtc.h src/backend.h src/cuda_backend.h src/model.h src/expert_cache.h src/gpu_model.h src/sampling.h src/glm.h src/ds_mat.h src/ds_ops.h src/cpu_moe.h
 build build_mx/strata_cpp_dev.dll: dll_dev src/dev_api.cpp src/gguf.cpp src/quant.cpp $
     src/config.cpp src/weights.cpp src/memory.cpp src/nvrtc.cpp src/backend.cpp src/cuda_backend.cpp src/cuda_backend_ops.cpp src/cuda_backend_seq.cpp $
     src/model.cpp src/expert_cache.cpp src/gpu_model.cpp src/prefill.cpp src/sampling.cpp src/cpu_moe.cpp src/cpu_worker.cpp $

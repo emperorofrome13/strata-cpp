@@ -19,7 +19,10 @@
 #include "config.h"
 #include "cpu_moe.h"
 #include "cpu_worker.h"
+#include "ds_mat.h"
+#include "ds_ops.h"
 #include "gguf.h"
+#include "glm.h"
 #include "weights.h"
 
 #ifdef _WIN32
@@ -271,4 +274,182 @@ SC_EXPORT int sctw_wait_done(void* wh, int il, int timeout_ms) {
 SC_EXPORT uint64_t sctw_busy_ns(void* wh) {
     WorkerHandle* p = as_worker(wh);
     return p && p->w ? p->w->busy_ns() : 0;
+}
+
+// ---------------------------------------------------------------- GLM-5.3-Flash (glm5-next), CPU only
+//
+// Test hooks for the port of glm/forward.rs, deepseek/mat.rs and deepseek/ops.rs, driven from tests\test_glm_cpu.py.
+// The model is always opened with the GPU path off (no backend factory, DsGpuConfig::on false), so nothing here
+// creates a CUDA context.
+
+namespace {
+
+struct GlmHandle {
+    Gguf g;
+    std::unique_ptr<GlmModel> m;
+    std::vector<float> logits;
+};
+
+GlmHandle* as_glm(void* h) { return static_cast<GlmHandle*>(h); }
+
+}  // namespace
+
+// Opens a glm5-next GGUF on the CPU path (threads 0 = default_threads(); ctx 0 = max_ctx). Null with sct_last_error.
+SC_EXPORT void* sctg_open(const char* path, int threads, long long ctx) {
+    auto h = std::make_unique<GlmHandle>();
+    std::string err;
+    if (!h->g.open(path, err)) {
+        g_err = err;
+        return nullptr;
+    }
+    GlmLoad opt;
+    opt.gpu.on = false;
+    opt.threads = threads > 0 ? (size_t)threads : 0;
+    opt.ctx = ctx > 0 ? (size_t)ctx : 0;
+    if (!GlmModel::create(h->g, opt, h->m, err)) {
+        g_err = err;
+        return nullptr;
+    }
+    return h.release();
+}
+
+SC_EXPORT void sctg_close(void* h) { delete as_glm(h); }
+
+// out[0..8]: n_layer, n_kda, n_dsa, n_vocab, n_embd, n_expert, n_used, n_nextn, ctx limit.
+SC_EXPORT int sctg_info(void* h, int64_t* out) {
+    GlmHandle* p = as_glm(h);
+    if (!p) { g_err = "null handle"; return 1; }
+    const GlmConfig& c = p->m->cfg;
+    const int64_t v[9] = {(int64_t)c.n_layer, (int64_t)c.n_kda(), (int64_t)c.n_dsa(), (int64_t)c.n_vocab,
+                          (int64_t)c.n_embd, (int64_t)c.n_expert, (int64_t)c.n_used, (int64_t)c.n_nextn,
+                          (int64_t)p->m->ctx_limit()};
+    std::memcpy(out, v, sizeof v);
+    return 0;
+}
+
+// port of glm/mod.rs: GlmConfig::validate on the open file. 0, or 1 with the problems in sct_last_error.
+SC_EXPORT int sctg_validate(void* h) {
+    GlmHandle* p = as_glm(h);
+    if (!p) { g_err = "null handle"; return 1; }
+    std::string err;
+    if (!p->m->cfg.validate(p->g, err)) { g_err = err; return 1; }
+    return 0;
+}
+
+// GlmConfig::from_gguf + validate on a file without building the model (any size: only the header is read).
+SC_EXPORT int sctg_check(const char* path, int64_t* out) {
+    Gguf g;
+    std::string err;
+    if (!g.open(path, err)) { g_err = err; return 1; }
+    GlmConfig c;
+    if (!GlmConfig::from_gguf(g, c, err)) { g_err = err; return 1; }
+    out[0] = (int64_t)c.n_layer;
+    out[1] = (int64_t)c.n_kda();
+    out[2] = (int64_t)c.n_dsa();
+    out[3] = (int64_t)c.n_nextn;
+    out[4] = (int64_t)c.n_expert;
+    out[5] = (int64_t)c.n_used;
+    out[6] = (int64_t)g.tensors().size();
+    if (!c.validate(g, err)) { g_err = err; return 2; }
+    return 0;
+}
+
+// port of glm/forward.rs: GlmModel::step. `logits` receives n_vocab floats.
+SC_EXPORT int sctg_step(void* h, int32_t tok, float* logits) {
+    GlmHandle* p = as_glm(h);
+    if (!p) { g_err = "null handle"; return 1; }
+    std::string err;
+    if (!p->m->step((uint32_t)tok, p->logits, err)) { g_err = err; return 1; }
+    std::memcpy(logits, p->logits.data(), p->logits.size() * sizeof(float));
+    return 0;
+}
+
+// port of glm/forward.rs: GlmModel::prefill (chunked layer-major for all but the last token; STRATA_GLM_CHUNK at open).
+SC_EXPORT int sctg_prefill(void* h, const int32_t* ids, int n, float* logits) {
+    GlmHandle* p = as_glm(h);
+    if (!p || n <= 0) { g_err = "null handle or empty prompt"; return 1; }
+    std::vector<uint32_t> t(ids, ids + n);
+    std::string err;
+    if (!p->m->prefill(t, p->logits, err)) { g_err = err; return 1; }
+    std::memcpy(logits, p->logits.data(), p->logits.size() * sizeof(float));
+    return 0;
+}
+
+// port of glm/forward.rs: GlmModel::reset
+SC_EXPORT int sctg_reset(void* h) {
+    GlmHandle* p = as_glm(h);
+    if (!p) { g_err = "null handle"; return 1; }
+    p->m->reset();
+    return 0;
+}
+
+// port of deepseek/ops.rs: hc_coeffs. out: pre[4], post[4], comb[16].
+SC_EXPORT void sctg_hc_coeffs(const float* mixes, const float* scale, const float* base, float eps, int iters, float* out) {
+    const Hc hc = hc_coeffs(mixes, scale, base, eps, (size_t)iters);
+    std::memcpy(out, hc.pre.data(), 16);
+    std::memcpy(out + 4, hc.post.data(), 16);
+    std::memcpy(out + 8, hc.comb.data(), 64);
+}
+
+// port of deepseek/ops.rs: hc_collapse / hc_post (n values per stream).
+SC_EXPORT void sctg_hc_post(const float* f, const float* residual, const float* coeffs, int n, float* out) {
+    Hc hc;
+    std::memcpy(hc.pre.data(), coeffs, 16);
+    std::memcpy(hc.post.data(), coeffs + 4, 16);
+    std::memcpy(hc.comb.data(), coeffs + 8, 64);
+    hc_post(f, residual, hc, out, (size_t)n);
+}
+
+// port of glm/forward.rs: route_sigmoid. ids/weights receive n_used entries.
+SC_EXPORT void sctg_route(const float* logits, const float* bias, int n, int n_used, int norm, float scale, int32_t* ids,
+                          float* weights) {
+    const auto r = route_sigmoid(logits, bias, (size_t)n, (size_t)n_used, norm != 0, scale);
+    for (size_t i = 0; i < r.size(); i++) {
+        ids[i] = (int32_t)r[i].first;
+        weights[i] = r[i].second;
+    }
+}
+
+// port of glm/forward.rs: l2_norm (in place).
+SC_EXPORT void sctg_l2_norm(float* x, int n, float eps) { glm_l2_norm(x, (size_t)n, eps); }
+
+// port of deepseek/ops.rs: swiglu_clamp, over n pairs.
+SC_EXPORT void sctg_swiglu_clamp(const float* g, const float* u, int n, float limit, float* out) {
+    for (int i = 0; i < n; i++) out[i] = swiglu_clamp(g[i], u[i], limit);
+}
+
+// port of deepseek/mat.rs: q8_roundtrip and the f16 rounding it uses.
+SC_EXPORT void sctg_q8_roundtrip(unsigned int ty, int cpu, const float* x, int n, float* out) {
+    const auto t = ty_from_u32(ty);
+    const std::vector<float> r = q8_roundtrip(t ? *t : Ty::F32, cpu != 0, x, (size_t)n);
+    std::memcpy(out, r.data(), r.size() * sizeof(float));
+}
+SC_EXPORT float sctg_f16_round(float v) { return f16_round(v); }
+
+// port of deepseek/mat.rs: Mat::matvec on the CPU (no device): `rows` x `cols` weights of type `ty` in `w`,
+// `cpu` = routed-expert flag, `cpu_ref` = STRATA_CPU_REF.
+SC_EXPORT int sctg_matvec(unsigned int ty, const uint8_t* w, long long len, int rows, int cols, int cpu, int cpu_ref,
+                          int threads, const float* x, float* y) {
+    const auto t = ty_from_u32(ty);
+    if (!t || (size_t)len != row_bytes(*t, (uint64_t)cols) * (size_t)rows) { g_err = "bad type or size"; return 1; }
+    ThreadPool pool(threads > 0 ? (size_t)threads : default_threads());
+    DsEnv env;
+    env.pool = &pool;
+    env.batch = true;
+    env.cpu_ref = cpu_ref != 0;
+    Mat m;
+    m.data = w;
+    m.len = (size_t)len;
+    m.ty = *t;
+    m.rows = (size_t)rows;
+    m.cols = (size_t)cols;
+    m.cpu = cpu != 0;
+    m.env = &env;
+    try {
+        m.matvec(x, y);
+    } catch (const std::exception& e) {
+        g_err = e.what();
+        return 1;
+    }
+    return 0;
 }

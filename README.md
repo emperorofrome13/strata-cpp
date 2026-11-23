@@ -16,6 +16,7 @@ RustingStrata License 1.0 — see [License](#license) and `MODIFICATIONS.md`.
 |---|---|---|
 | `qwen35moe` | Qwen3.5 / Qwen3.6 MoE | **Main target.** Fully resident decode 199.5 vs 207.7 tok/s for the official RustingStrata (96%, gate met); parity 192/192 argmax positions and max top-1 logprob difference 0.000000. Batched prefill pp512 102.9% and tg128 97.0% of official, resident expert count matched (3600/3600). With a forced 8500 MB VRAM margin (partial residency + CPU worker): parity 97.4%, decode 98.4% of official, pp512 92.7% (**gate 95%, not met**), and the profile round-trip places 1726 experts vs the official 1715 (**not matched**). |
 | `qwen4exp` | Qwen3.8-Flash-Next | Ported (hyper-connection streams, per-layer embeddings, QSA sparse attention, DeltaNet and full attention layers, sigmoid-gated norms). **Gates not met:** parity 61/64 = 95.3% (gate 97%), max top-1 logprob difference 0.317; decode 34.4 vs 31.0 tok/s (111%); pp512 98.9 vs 124.8 tok/s (**79%, gate 95%, not met**); CPU worker 25.8 / 19.0 ms per token vs official 31.6 / 22.0. |
+| `glm5-next` / `glm5next` | GLM-5.3-Flash | **Ported, not yet verified on GPU.** Port of RustingStrata 1.2.5's `glm/` (2026-11-23): Kimi delta attention, NoPE MLA with the k-pool sparse indexer, four-stream hyper-connections, sigmoid-routed MoE with a shared expert; the CPU reference forward with the dense matvecs and a VRAM expert cache on the GPU, as RustingStrata runs it. Accepts both arch spellings (RustingStrata's `glm5-next`, llama.cpp's and unsloth's `glm5next`). CPU path checked against an independent numpy forward on a synthetic model (max relative logit difference 6.1e-6, prefill bit-identical to token-by-token); the real UD-IQ1_S tensor table matches (1412/1412). GPU parity against the official binary (`tests/test_score_glm5.py`, gate argmax >= 97%) and speed are **not measured yet**. See `docs/GLM5_NOTES.md`. |
 | `inkling2` | Inkling-2-Mini (a StrataFreet addition, not in RustingStrata 1.2.5) | Implemented: 48 logical slots over 24 physical blocks, 3 loop passes, relative-bias sliding-window and full attention, shortconv, fused gate/up experts, Situ, router and down biases. Parity vs llama.cpp CPU: 255/256 argmax (99.6%), max logprob difference 0.0612; vs llama.cpp CUDA: 252/256 (98.4%), 0.152. All-resident IQ3_XXS at ctx 8192: pp512 145.3 tok/s, tg128 98.8 tok/s. The 21.3 GB Q8 file runs through the expert cache: pp512 14.4, tg128 15.8 tok/s. |
 
 ### Latest test run (2026-11-23, this repository's build)
@@ -58,7 +59,8 @@ the Rust reference dequantizers; MXFP4 is bit-exact against StrataFreet's `quant
 - `ninja` on `PATH`, and Python 3 on `PATH` for the kernel-embedding build step.
 - An NVIDIA GPU. Kernels are compiled by NVRTC at run time for the compute capability of the device in
   use; the int8 tensor-core prefill path needs sm_80+. It has only been tested on an RTX 5070 Ti (sm_120)
-  with CUDA 12.9. No Vulkan or CPU-only backend exists.
+  with CUDA 12.9. No Vulkan or CPU-only backend exists (GLM-5.3-Flash alone can keep its whole forward on the CPU
+  with `STRATA_GLM_CPU`, as RustingStrata can).
 - An x86-64 CPU with AVX2. The build uses `/arch:AVX2`, so the compiler may emit AVX2 instructions
   anywhere in the DLL; it is not expected to run on a CPU without AVX2.
 
@@ -95,6 +97,8 @@ the test prints a `SKIP:` line and exits 0; there are no built-in machine paths.
 | `SC_MODEL_14B` | Qwen3.6-14B-A3B Q6_K GGUF (the `qwen35moe` test model) |
 | `SC_MODEL_FLASHNEXT` | Qwen3.8-Flash-Next UD-Q3_K_XL first shard (`qwen4exp`) |
 | `SC_MODEL_INKLING` | Inkling-2-Mini IQ3_XXS GGUF (`inkling2`) |
+| `SC_MODEL_GLM5` | GLM-5.3-Flash first shard, e.g. UD-IQ1_S `GLM-5.3-Flash-UD-IQ1_S-00001-of-00003.gguf` (`glm5next`) |
+| `SC_GLM5_ALIAS_DIR` | Folder on the GLM model's volume for the official binary's arch alias (default `build\glm5_alias`) |
 | `SC_GPT_OSS_GGUF` | gpt-oss-20b MXFP4 GGUF (real MXFP4 expert rows) |
 | `STRATAFREET_ROOT` | StrataFreet checkout — the Python reference oracle (`quant`, `gguf_io`, `tokenizer`) |
 | `SC_RUSTINGSTRATA` | `rustingstrata.exe` 1.2.5 — the official oracle |
@@ -110,6 +114,7 @@ the test prints a `SKIP:` line and exits 0; there are no built-in machine paths.
 | `test_weights.py` | `STRATAFREET_ROOT`, `SC_MODEL_14B` and/or `SC_MODEL_FLASHNEXT` | **yes** |
 | `test_cpu_moe.py` | `build_cpu.bat`, `STRATAFREET_ROOT` + its ggml runtime, `SC_MODEL_14B`, optionally `SC_GPT_OSS_GGUF` | **yes** |
 | `test_cpu_worker.py` | `build_cpu.bat`, `SC_MODEL_14B` | **yes** |
+| `test_glm_cpu.py` | `build_cpu.bat`, numpy (writes a 38 MB synthetic GLM-5.3 GGUF) | **yes** — the GLM port on the CPU path against a numpy forward |
 | `test_smoke.py` | built DLL, NVIDIA GPU, `CUDA_PATH` | no |
 | `test_backend_gemv.py` | GPU, `STRATAFREET_ROOT`, `SC_MODEL_14B`, optionally `SC_GPT_OSS_GGUF` | no |
 | `test_backend_ops.py` | GPU, `STRATAFREET_ROOT`, `SC_MODEL_14B`, `SC_MODEL_FLASHNEXT` | no |
@@ -119,6 +124,7 @@ the test prints a `SKIP:` line and exits 0; there are no built-in machine paths.
 | `test_prefill_14b.py` | GPU, `SC_MODEL_14B`, `SC_RUSTINGSTRATA`, `STRATAFREET_ROOT` | no |
 | `test_flashnext.py` | GPU, ≥ 85 GB free RAM, `SC_MODEL_FLASHNEXT`, `SC_RUSTINGSTRATA`, `STRATAFREET_ROOT` | no |
 | `test_score_inkling.py` | GPU, `SC_MODEL_INKLING`, `SC_LLAMA_SERVER`, `STRATAFREET_ROOT` | no |
+| `test_score_glm5.py` | GPU, >= 24 GB free RAM, `SC_MODEL_GLM5`, `SC_RUSTINGSTRATA` | no |
 | `verify_ram_lock.py` | GPU, `SC_MODEL_14B`, `SC_EVICT_GGUFS`, `STRATAFREET_ROOT` | no |
 
 Example (PowerShell):
@@ -158,6 +164,9 @@ loaded model with its KV cache and recurrent state and must be used from one thr
 | `sc_stats(h)` | JSON of layers, positions, expert residency, hits and misses |
 | `sc_free(h)` | Free the handle and its device memory |
 
+For GLM-5.3-Flash (`glm5-next` / `glm5next`) `sc_load` builds the port of RustingStrata's GLM forward instead; its
+options and environment variables are listed in `src\capi.h` and `docs/GLM5_NOTES.md`.
+
 The load reads the calibration file `%LOCALAPPDATA%\rusting_strata\strata-<model stem>.json` for `chunk`,
 `mtp` and `short` (explicit load options win). MTP is reported but not implemented. A routing profile is
 read from the same directory at load and written after a run that recorded routing.
@@ -190,7 +199,8 @@ implying that Vasyl Trefilov endorses this work.
   backend, expert cache, CPU expert code and kernel source are the reference for every function here.
 - **llama.cpp** (MIT License, ggml authors) — its `src/models/inkling2.cpp`, `inkling2-loop.cpp` and the
   related model/attention/KV sources were the reference for the Inkling-2-Mini implementation, which is
-  a StrataFreet addition and not part of RustingStrata 1.2.5. The GGML quantization tables and scalar
+  a StrataFreet addition and not part of RustingStrata 1.2.5. Its `src/models/glm5-next.cpp` was the cross-check for
+  every formula of the GLM-5.3-Flash port (`docs/GLM5_NOTES.md`). The GGML quantization tables and scalar
   kernels also originate in llama.cpp/ggml via RustingStrata.
 - **StrataFreet** — the host application this DLL was developed for. It is not included in this
   repository; its Python package is used by the tests as an optional reference oracle through
@@ -199,11 +209,11 @@ implying that Vasyl Trefilov endorses this work.
 ## Repository layout
 
 ```
-src/                 the port (GGUF, quant, config, weights, CUDA backend, model, prefill, expert cache, C ABI)
+src/                 the port (GGUF, quant, config, weights, CUDA backend, model, prefill, expert cache, GLM, C ABI)
 kernels/             kernels.cu and tables.cuh from RustingStrata 1.2.5; DIFF-vs-stratafreet.md
 tools/               embed_kernels.py, gen_tables.py, gen_inventory.py, sc_score.cpp, sc_bench.cpp
 tests/               ctypes-driven tests and the shared environment helper sc_env.py
-docs/                DEVLOG.md (port history), INKLING2_NOTES.md (Inkling-2 reference notes)
+docs/                DEVLOG.md (port history), INKLING2_NOTES.md (Inkling-2), GLM5_NOTES.md (GLM-5.3-Flash)
 build.bat            build the product DLL, dev DLL and tools
 build_cpu.bat        build the CPU expert test DLL
 build_mx.bat         build everything into build_mx\

@@ -23,6 +23,7 @@
 
 #include "cuda_backend.h"
 #include "gguf.h"
+#include "glm.h"
 #include "gpu_model.h"
 #include "model.h"
 #include "nvrtc.h"
@@ -107,6 +108,8 @@ struct Session {
     strata::Gguf g;
     strata::Model model;
     std::unique_ptr<strata::GpuModel> gm;
+    // GLM-5.3-Flash (glm5-next / glm5next): the port of glm/forward.rs instead of `model` + `gm` (which stay empty).
+    std::unique_ptr<strata::GlmModel> glm;
     std::vector<float> logits;
     std::string stats;
     size_t threads = 0;
@@ -151,6 +154,14 @@ Session* session(void* h, const char* fn) {
         return nullptr;
     }
     return static_cast<Session*>(h);
+}
+
+// The logits row length of the loaded model.
+size_t vocab_of(const Session* s) { return s->glm ? s->glm->cfg.n_vocab : s->model.cfg.n_vocab; }
+
+// One token through whichever model the session holds; `logits` receives its logits.
+bool step_any(Session* s, uint32_t tok, std::vector<float>& logits, std::string& err) {
+    return s->glm ? s->glm->step(tok, logits, err) : s->gm->step(tok, logits, err);
 }
 
 }  // namespace
@@ -297,6 +308,37 @@ SC_EXPORT void* sc_load(const char* gguf_path, const char* options_json) {
         set_error(err);
         return nullptr;
     }
+    // GLM-5.3-Flash: RustingStrata runs it through glm/forward.rs (CPU reference forward, GPU matvecs and expert
+    // cache), not through Model/GpuModel; so does this port. sc_load options used: ctx (the context limit; default the
+    // trained context or STRATA_GLM_CTX), threads, device (the default of STRATA_DS_DEVICES), seed, ram. The
+    // STRATA_DS_* / STRATA_GLM_* environment variables of the Rust code apply.
+    {
+        const strata::Value* av = s->g.get("general.architecture");
+        const std::string* as = av ? av->as_str() : nullptr;
+        if (as && strata::is_glm_arch(*as)) {
+            if (pin) {
+                set_error("sc_load: pin is not supported for glm5-next (its expert cache copies from the mapping or the RAM copy)");
+                return nullptr;
+            }
+            strata::GlmLoad gl;
+            gl.gpu = strata::glm_gpu_config(static_cast<int>(device));
+            gl.open_backend = [](int d, std::string& e) -> std::unique_ptr<strata::Backend> {
+                return strata::CudaBackend::create(d, e);
+            };
+            gl.threads = static_cast<size_t>(threads);
+            double given_ctx = 0;
+            gl.ctx = json_num(opts, "ctx", given_ctx) ? static_cast<size_t>(given_ctx) : 0;
+            if (!strata::GlmModel::create(s->g, gl, s->glm, err)) {
+                set_error(err);
+                return nullptr;
+            }
+            s->threads = s->glm->threads();
+            s->seed = seed >= 1 ? static_cast<uint64_t>(seed) : 1;
+            s->rng = s->seed;
+            s->load_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load0).count();
+            return s.release();
+        }
+    }
     if (!s->model.load(s->g, err)) {
         set_error(err);
         return nullptr;
@@ -377,19 +419,19 @@ SC_EXPORT void* sc_load(const char* gguf_path, const char* options_json) {
 SC_EXPORT int sc_n_vocab(void* h) {
     Session* s = session(h, "sc_n_vocab");
     if (!s) return 0;
-    return static_cast<int>(s->model.cfg.n_vocab);
+    return static_cast<int>(vocab_of(s));
 }
 
 SC_EXPORT int sc_decode(void* h, int32_t tok, float* logits_out) {
     Session* s = session(h, "sc_decode");
     if (!s) return 1;
-    if (tok < 0 || static_cast<size_t>(tok) >= s->model.cfg.n_vocab) {
+    if (tok < 0 || static_cast<size_t>(tok) >= vocab_of(s)) {
         set_error("sc_decode: token " + std::to_string(tok) + " is outside the vocabulary (" +
-                  std::to_string(s->model.cfg.n_vocab) + ")");
+                  std::to_string(vocab_of(s)) + ")");
         return 1;
     }
     std::string err;
-    if (!s->gm->step(static_cast<uint32_t>(tok), s->logits, err)) {
+    if (!step_any(s, static_cast<uint32_t>(tok), s->logits, err)) {
         set_error(err);
         return 1;
     }
@@ -404,7 +446,7 @@ SC_EXPORT int sc_decode_sample(void* h, int32_t tok, const char* sampler_json, i
         set_error("sc_decode_sample: out must be non-null");
         return 1;
     }
-    if (tok < 0 || static_cast<size_t>(tok) >= s->model.cfg.n_vocab) {
+    if (tok < 0 || static_cast<size_t>(tok) >= vocab_of(s)) {
         set_error("sc_decode_sample: token " + std::to_string(tok) + " is outside the vocabulary");
         return 1;
     }
@@ -422,7 +464,20 @@ SC_EXPORT int sc_decode_sample(void* h, int32_t tok, const char* sampler_json, i
     smp.recent = recent.data();
     smp.recent_n = recent.size();
     smp.rng = s->rng;
-    if (smp.temp == 0 && !smp.has_penalties()) {
+    if (s->glm && smp.temp == 0 && !smp.has_penalties()) {
+        // GLM greedy: the logits are on the host already; the first index of the largest (ops.rs argmax).
+        if (!s->glm->step(static_cast<uint32_t>(tok), s->logits, err)) {
+            set_error(err);
+            return 1;
+        }
+        size_t best = 0;
+        for (size_t i = 1; i < s->logits.size(); i++) {
+            if (s->logits[i] > s->logits[best]) best = i;
+        }
+        *out = static_cast<int32_t>(best);
+        return 0;
+    }
+    if (!s->glm && smp.temp == 0 && !smp.has_penalties()) {
         // Greedy: the argmax is taken on the device (no logits copy), first index on ties (as ops.rs argmax).
         // With penalties active the host path below applies them before the argmax (engine.py parity).
         int32_t am = 0;
@@ -433,7 +488,7 @@ SC_EXPORT int sc_decode_sample(void* h, int32_t tok, const char* sampler_json, i
         *out = am;
         return 0;
     }
-    if (!s->gm->step(static_cast<uint32_t>(tok), s->logits, err)) {
+    if (!step_any(s, static_cast<uint32_t>(tok), s->logits, err)) {
         set_error(err);
         return 1;
     }
@@ -447,13 +502,14 @@ SC_EXPORT int sc_decode_sample(void* h, int32_t tok, const char* sampler_json, i
     return 0;
 }
 
-// The prompt through the batched prefill (GpuModel::prefill); `logits` receives the last position's logits.
+// The prompt through the batched prefill (GpuModel::prefill, or GlmModel::prefill for glm5-next); `logits`
+// receives the last position's logits.
 static int prefill_run(Session* s, const char* fn, const int32_t* ids, int n, std::vector<float>& logits) {
     if (!ids || n <= 0) {
         set_error(std::string(fn) + ": ids must be non-null and n positive");
         return 1;
     }
-    const size_t nv = s->model.cfg.n_vocab;
+    const size_t nv = vocab_of(s);
     std::vector<uint32_t> toks(static_cast<size_t>(n));
     for (int i = 0; i < n; i++) {
         if (ids[i] < 0 || static_cast<size_t>(ids[i]) >= nv) {
@@ -464,7 +520,7 @@ static int prefill_run(Session* s, const char* fn, const int32_t* ids, int n, st
         toks[static_cast<size_t>(i)] = static_cast<uint32_t>(ids[i]);
     }
     std::string err;
-    if (!s->gm->prefill(toks, logits, err)) {
+    if (!(s->glm ? s->glm->prefill(toks, logits, err) : s->gm->prefill(toks, logits, err))) {
         set_error(err);
         return 1;
     }
@@ -538,6 +594,10 @@ SC_EXPORT int sc_reset(void* h, int32_t keep_tokens) {
         set_error("sc_reset: keep_tokens must be 0 (a partial reset needs the DeltaNet state snapshots, not ported yet)");
         return 1;
     }
+    if (s->glm) {
+        s->glm->reset();
+        return 0;
+    }
     std::string err;
     if (!s->gm->reset(err)) {
         set_error(err);
@@ -549,6 +609,8 @@ SC_EXPORT int sc_reset(void* h, int32_t keep_tokens) {
 SC_EXPORT int sc_save_profile(void* h) {
     Session* s = session(h, "sc_save_profile");
     if (!s) return 1;
+    // glm/forward.rs keeps no routing profile file (its decode hot set comes from the prompt's routing): nothing to write.
+    if (s->glm) return 0;
     std::string err;
     if (!s->gm->save_profile(err)) {
         set_error(err);
@@ -560,6 +622,42 @@ SC_EXPORT int sc_save_profile(void* h) {
 SC_EXPORT const char* sc_stats(void* h) {
     Session* s = session(h, "sc_stats");
     if (!s) return "";
+    if (s->glm) {
+        // glm5-next: the expert-cache counters of deepseek/mat.rs (main.rs big_expert_stats: 3 tensors per expert).
+        const strata::GlmModel& m = *s->glm;
+        const double total = double(m.hits() + m.misses());
+        char rate[32];
+        std::snprintf(rate, sizeof rate, "%.4f", total > 0 ? double(m.hits()) / total : 1.0);
+        s->stats = "{\"arch\":\"" + m.cfg.arch + "\"" +
+                   ",\"n_layer\":" + std::to_string(m.cfg.n_layer) +
+                   ",\"n_kda\":" + std::to_string(m.cfg.n_kda()) +
+                   ",\"n_dsa\":" + std::to_string(m.cfg.n_dsa()) +
+                   ",\"n_vocab\":" + std::to_string(m.cfg.n_vocab) +
+                   ",\"ctx\":" + std::to_string(m.ctx_limit()) +
+                   ",\"pos\":" + std::to_string(m.toks.size()) +
+                   ",\"tokens\":" + std::to_string(m.toks.size()) +
+                   ",\"hits\":" + std::to_string(m.hits()) +
+                   ",\"misses\":" + std::to_string(m.misses()) +
+                   ",\"hit_rate\":" + rate +
+                   ",\"swaps\":0" +
+                   ",\"experts_resident\":" + std::to_string(m.resident_experts()) +
+                   ",\"experts_total\":" + std::to_string(m.expert_tensors_total()) +
+                   ",\"gpu_mb\":" + std::to_string(m.gpu_bytes() >> 20) +
+                   ",\"fully_resident\":false" +
+                   ",\"n_expert\":" + std::to_string(m.cfg.n_expert) +
+                   ",\"n_expert_used\":" + std::to_string(m.cfg.n_used) +
+                   ",\"backend\":\"" + m.backend_name() + "\"" +
+                   ",\"gpu_note\":\"" + json_esc(m.gpu_note()) + "\"" +
+                   ",\"device\":\"" + json_esc(m.device_name()) + "\"" +
+                   ",\"threads\":" + std::to_string(s->threads) +
+                   ",\"ram_mode\":\"" + s->ram_mode + "\"" +
+                   ",\"ram_bytes\":" + std::to_string(s->ram.bytes) +
+                   ",\"ram_locked_bytes\":" + std::to_string(s->ram.locked_bytes) +
+                   ",\"ram_load_seconds\":" + std::to_string(s->ram.seconds) +
+                   ",\"load_seconds\":" + std::to_string(s->load_seconds) +
+                   ",\"ram_warnings\":[" + warnings_json(s->ram.warnings) + "]}";
+        return s->stats.c_str();
+    }
     const strata::GpuModel& gm = *s->gm;
     const strata::ExpertCache* ec = gm.experts();
     const double busy_ms = double(gm.cpu_busy_ns()) / 1e6;

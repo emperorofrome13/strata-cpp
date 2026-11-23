@@ -1978,4 +1978,7 @@ bool int_dot_rows(Ty ty, bool scalar, const uint8_t* w, size_t rows, size_t rb, 
     return true;
 }
 
+// port of cpu_moe.rs: int_dot (the public entry deepseek/mat.rs uses; STRATA_SCALAR read per call, as in Rust).
+IntDotFn int_dot_kernel(Ty ty) { return int_dot(ty, scalar_env()); }
+
 }  // namespace strata

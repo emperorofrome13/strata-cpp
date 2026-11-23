@@ -45,6 +45,13 @@ SC_EXPORT int sc_selftest_kernel(float* out, int n);
 // The calibration file %LOCALAPPDATA%usting_strata\strata-<model stem>.json is read for "chunk", "mtp" and "short"
 // (the defaults of "chunk" and "short" here; "mtp" is only reported, MTP is not ported). The load prints Strata's
 // `plan:` and `expert traffic:` lines to stderr.
+// GLM-5.3-Flash (general.architecture "glm5-next" or "glm5next") runs the port of RustingStrata's glm/forward.rs instead:
+// the CPU reference forward with the dense matvecs and a VRAM expert cache on the GPU (src/glm.h). For it "ctx" is the
+// context limit (when not given: STRATA_GLM_CTX, else the trained context; the latent cache grows with the text),
+// "threads", "device" (the default of STRATA_DS_DEVICES), "seed" and "ram" apply; "kv", "vram_margin_mb", "chunk" and
+// "short" do not (the VRAM budget is STRATA_DS_GPU_EXPERTS GB or STRATA_DS_GPU_FRACTION of free VRAM, default 0.9;
+// the prefill chunk is STRATA_GLM_CHUNK, default 512), "pin" is refused, and the calibration file is not read.
+// STRATA_GLM_CPU keeps everything on the CPU. sc_save_profile writes nothing for it; sc_stats reports its own keys.
 // Returns the handle, or null with sc_last_error() set.
 SC_EXPORT void* sc_load(const char* gguf_path, const char* options_json);
 
