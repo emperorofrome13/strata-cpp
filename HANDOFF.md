@@ -219,3 +219,14 @@ the port (recorded in `docs/DEVLOG.md`), not re-measured tonight.
   can mis-parse (labels, `goto`) on a checkout without CRLF conversion.
 - README: removed the unverified claims that the DLL runs without AVX2 and on Volta GPUs.
 - Not run: `test_sampler.py` and every GPU test (GPU busy).
+
+## GPU test run (2026-11-23)
+
+GPU free (1.2 GB in use, no other CUDA job), 73-75 GB RAM free. Clean `build.bat` + `build_cpu.bat`, then one test
+at a time. Results are in the README "Latest test run" table. Summary: every kernel, quant, sampler and CPU test
+passes; `test_score_14b` and `test_score_inkling` pass; `test_prefill_14b` and `test_partial_14b` fail on the
+same partial-residency gates already open in `docs/DEVLOG.md` (pp512 and decode speed at an 8500 MB margin, and
+1725 vs 1715 resident experts); the engine code is byte-identical to StrataFreet's, so these are not caused by
+the repository copy. `test_flashnext` skipped itself (needs 85 GB free RAM). `verify_ram_lock` not run.
+
+Next: run `test_flashnext.py` with 90 GB of RAM free; then create the GitHub repository and push.

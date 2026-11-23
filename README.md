@@ -18,6 +18,23 @@ RustingStrata License 1.0 — see [License](#license) and `MODIFICATIONS.md`.
 | `qwen4exp` | Qwen3.8-Flash-Next | Ported (hyper-connection streams, per-layer embeddings, QSA sparse attention, DeltaNet and full attention layers, sigmoid-gated norms). **Gates not met:** parity 61/64 = 95.3% (gate 97%), max top-1 logprob difference 0.317; decode 34.4 vs 31.0 tok/s (111%); pp512 98.9 vs 124.8 tok/s (**79%, gate 95%, not met**); CPU worker 25.8 / 19.0 ms per token vs official 31.6 / 22.0. |
 | `inkling2` | Inkling-2-Mini (a StrataFreet addition, not in RustingStrata 1.2.5) | Implemented: 48 logical slots over 24 physical blocks, 3 loop passes, relative-bias sliding-window and full attention, shortconv, fused gate/up experts, Situ, router and down biases. Parity vs llama.cpp CPU: 255/256 argmax (99.6%), max logprob difference 0.0612; vs llama.cpp CUDA: 252/256 (98.4%), 0.152. All-resident IQ3_XXS at ctx 8192: pp512 145.3 tok/s, tg128 98.8 tok/s. The 21.3 GB Q8 file runs through the expert cache: pp512 14.4, tg128 15.8 tok/s. |
 
+### Latest test run (2026-11-23, this repository's build)
+
+| Test | Result |
+|---|---|
+| `test_smoke`, `test_sampler` (46 checks), `test_quant` (26 types, real MXFP4 rows) | PASS |
+| `test_backend_gemv` (39 comparisons), `test_backend_ops` (111 checks), `test_backend_seq` (55 checks) | PASS |
+| `test_gguf`, `test_weights`, `test_cpu_moe`, `test_cpu_worker` (14B model) | PASS |
+| `test_score_14b` | PASS: argmax 192/192, max top-1 logprob diff 0.000000; decode 191.1 vs 196.0 tok/s official |
+| `test_prefill_14b` | FAIL (open gates): margin 8500 MB pp512 569.0 vs 661.3 tok/s official (86.0%, gate 95%); tg128 98.1% (ok); resident 1725 vs 1715 |
+| `test_partial_14b` | FAIL (open gates): parity 188/192 = 97.9% (ok, gate 97%); decode 69.1 vs 83.8 tok/s (82.4%, gate 95%); placement 1725 vs 1715 |
+| `test_score_inkling` | PASS: argmax 63/64 = 98.4% vs llama.cpp CPU; pp512 143.9, tg128 97.9 tok/s (all 3072 experts resident) |
+| `test_flashnext` | not measured: needs 85 GB free RAM, 75 GB was free |
+| `verify_ram_lock` | not run |
+
+Partial-residency speed varies between runs on this machine (the official binary's own decode ranged 55.9 to
+108.4 tok/s in the same run); the open gates above match the ones recorded in `docs/DEVLOG.md`.
+
 Everything here is measured on the machine listed under [Measured hardware](#measured-hardware).
 Numbers for other model files, margins and contexts will differ. The full wave-by-wave history, including
 every gate that was missed, is in `docs/DEVLOG.md`.
