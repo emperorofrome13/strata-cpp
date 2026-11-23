@@ -889,5 +889,6 @@ Deviations from the Rust code:
 Verification (2026-11-23, CPU only - the GPU was in use by another job): `build.bat` and `build_cpu.bat` build with no
 warning from the new files; `tests/test_glm_cpu.py` PASS (numbers in `docs/GLM5_NOTES.md`); `test_quant` (26 types),
 `test_sampler` (46 checks) and `test_gguf` (on the synthetic GLM files) PASS; the real UD-IQ1_S tensor table equals
-`expected_tensors()` (1412 tensors, checked from the header). **The GPU path has not run**: `tests/test_score_glm5.py`
-(parity against the official binary, gate argmax >= 97%) is written and waits for the GPU (commands in `HANDOFF.md`).
+`expected_tensors()` (1412 tensors, checked from the header). GPU, later the same day: `tests/test_score_glm5.py
+--n 4` against the official binary argmax 12/12, max |top-1 logprob diff| 0.0010; the full 3 x 64 run and speed were not
+measured (`HANDOFF.md`).

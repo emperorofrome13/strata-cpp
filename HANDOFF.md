@@ -4,7 +4,7 @@ Public-ready standalone repository of **strata.cpp**, the C++/CUDA port of Rusti
 decode and prefill path. Built from the read-only internal StrataFreet checkout (the `native/strata_cpp`
 directory of that project); nothing in that project was modified.
 
-## GLM-5.3-Flash port (branch `glm5next`, 2026-11-23) — ported, not yet verified on GPU
+## GLM-5.3-Flash port (branch `glm5next`, 2026-11-23) — ported, short GPU parity check passed
 
 Port of RustingStrata 1.2.5's `src/glm/` (+ the `deepseek/mat.rs` and `deepseek/ops.rs` parts it runs on) into
 `src/glm.h`, `src/glm.cpp`, `src/glm_forward.cpp`, `src/ds_mat.{h,cpp}`, `src/ds_ops.{h,cpp}`, wired into the product
@@ -74,9 +74,19 @@ If parity fails: `STRATA_GLM_DUMP=<dir>` makes both engines append the same per-
 continuation); `STRATA_GLM_TRACE=1` prints the same values' heads and sums; `STRATA_GLM_BATCH=0`, `STRATA_DS_BATCH=0`
 and `STRATA_GLM_CHUNK=1` switch off the batched paths on both sides; `STRATA_GLM_CPU=1` keeps both on the CPU.
 
-Open items: the GPU path (`ds_mat.cpp` `Dev`: upload, expert cache, staging, batched gemv/gemm) has never run; speed is
-unmeasured; the NextN/MTP block is not used (as in Rust); README status row says "ported, not yet verified on GPU"
-until `test_score_glm5.py` passes.
+### GPU run (2026-11-23, later the same day, GPU lease from E:iprojects\gpu_scheduler)
+
+- `rustingstrata check` on the alias: `check: glm5-next ok: 45 layers (34 KDA, 11 DSA) + 1 NextN, 288 experts (8 used),
+  1412 tensors, tensor table valid`.
+- `python tests	est_score_glm5.py --n 4` (run as `gpusched.bat run --agent claude-code --exclusive --ram 40 -- ...`):
+  **PASS**, argmax 12/12, max |top-1 logprob diff| 0.0010 (prompt 1: 4/4, 0.0007; prompt 2: 4/4, 0.0010; prompt 3:
+  4/4, 0.0009). Wall times (rustingstrata 129-275 s, strata-cpp 13-76 s per prompt) are not a speed comparison: the
+  oracle runs with `STRATA_GLM_TRACE=1`, which prints every layer's tensors.
+- The full `--n 64 --speed` run was started and stopped at the user's request; `--long` was not run.
+
+Open items: the full 3 x 64 parity run, the indexer selection past 2048 rows on the real model (`--long`), sustained
+expert-cache eviction/staging over long decodes, and speed are unmeasured; the existing GPU suite was not re-run after
+the shared-file changes (`capi.cpp`, `cpu_moe.cpp`, ninja files); the NextN/MTP block is not used (as in Rust).
 
 ## What is in the repository
 

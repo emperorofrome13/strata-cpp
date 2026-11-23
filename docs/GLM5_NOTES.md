@@ -91,7 +91,7 @@ llama.cpp near-ties, margins 0.03-0.53 logprob); a later 3 x 32 check 96/96.
   this DLL); the Vulkan backend (`STRATA_DS_BACKEND=vulkan` is refused); `prefetch_expert` stays the no-op the Rust
   code is outside Linux.
 
-## Verification so far (2026-11-23, GPU busy: CPU only)
+## Verification so far (2026-11-23)
 
 - `tests/test_glm_cpu.py`: PASS. A synthetic glm5-next GGUF (n_embd 64, 4 layers + NextN, F32) through the CPU path
   against an independent float64 numpy forward written from the llama.cpp formulas above: 20 positions, max |logit
@@ -101,5 +101,6 @@ llama.cpp near-ties, margins 0.03-0.53 logprob); a later 3 x 32 check 96/96.
   route_sigmoid (the Rust unit tests' cases and 20 random 288-expert routings), l2_norm, swiglu_clamp, the f16
   rounding (140,009 values equal to numpy's), q8_roundtrip (Q8_0, IQ4_NL, Q5_K on both paths) and Mat::matvec on
   Q8_0 weights (both CPU paths).
-- The GPU path (`ds_mat.cpp` `Dev`) compiles but has not run. `tests/test_score_glm5.py` is the acceptance test;
-  the commands are in `HANDOFF.md`.
+- GPU (UD-IQ1_S): the official binary's `check` accepts the alias; `tests/test_score_glm5.py --n 4` gives argmax
+  12/12 and max |top-1 logprob diff| 0.0010 over 3 prompts. Not run: the full 3 x 64 gate run, `--long` (indexer past
+  2048 rows on the real model) and `--speed`.
