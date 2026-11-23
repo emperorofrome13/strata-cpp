@@ -1,0 +1,37 @@
+# Build output
+build/
+build_mx/
+backup/
+.cache/
+.ec14/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Ninja
+.ninja_log
+.ninja_deps
+
+# Compiled binaries and objects
+*.dll
+*.exe
+*.lib
+*.exp
+*.obj
+*.pdb
+*.ilk
+*.cubin
+
+# Logs and data files written by the tests
+*.log
+*.bin
+*.npy
+*.gguf
+*.tmp
+.gpu.lock
+
+# Files the engine writes under %LOCALAPPDATA%\rusting_strata (tests copy them into build\)
+profile-*.f32
+strata-*.json

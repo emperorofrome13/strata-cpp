@@ -1,0 +1,33 @@
+# strata-cpu build into build_mx/ (a copy of build_cpu.ninja, so build/ stays loaded by the running benchmark).
+# Run through build_mx.bat (which runs this file after build_mx.ninja). Outputs: build_mx/strata_cpu_test.dll.
+# No paths with spaces appear here on purpose. This file has its own builddir so its .ninja_log does not mix
+# with build.ninja's.
+#
+# Compiled with /arch:AVX2 (the Rust build uses target-cpu=native, which enables AVX2 on an AVX2 CPU; the
+# AVX2 kernels in cpu_moe.cpp are compiled when __AVX2__ is defined).
+
+builddir = build_mx/cpu
+
+cflags = /nologo /O2 /std:c++20 /EHsc /W4 /wd4100 /MD /arch:AVX2 /Z7 /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX
+
+rule cc
+  command = cl /showIncludes $cflags /c $in /Fo$out
+  description = CC $in
+  deps = msvc
+
+rule link_dll
+  command = cl /nologo /LD $in /Fe:$out /link /IMPLIB:build_mx/strata_cpu_test.lib advapi32.lib
+  description = DLL $out
+
+build build_mx/cpu/gguf.obj: cc src/gguf.cpp
+build build_mx/cpu/quant.obj: cc src/quant.cpp
+build build_mx/cpu/config.obj: cc src/config.cpp
+build build_mx/cpu/weights.obj: cc src/weights.cpp
+build build_mx/cpu/memory.obj: cc src/memory.cpp
+build build_mx/cpu/cpu_moe.obj: cc src/cpu_moe.cpp | src/cpu_moe.h src/tables_host.h
+build build_mx/cpu/cpu_worker.obj: cc src/cpu_worker.cpp | src/cpu_worker.h src/cpu_moe.h
+build build_mx/cpu/cpu_test_api.obj: cc src/cpu_test_api.cpp | src/cpu_moe.h src/cpu_worker.h
+
+build build_mx/strata_cpu_test.dll: link_dll build_mx/cpu/gguf.obj build_mx/cpu/quant.obj build_mx/cpu/config.obj build_mx/cpu/weights.obj build_mx/cpu/memory.obj build_mx/cpu/cpu_moe.obj build_mx/cpu/cpu_worker.obj build_mx/cpu/cpu_test_api.obj
+
+default build_mx/strata_cpu_test.dll

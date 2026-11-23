@@ -1,0 +1,54 @@
+# strata-cpp build into build_mx\ (a copy of build.ninja, so build\ stays loaded by the running benchmark).
+# Outputs are under build_mx/ only. Run through build_mx.bat, which sets vcvars64 and the CUDA INCLUDE/LIB/PATH entries
+# (no paths with spaces appear here on purpose).
+#
+# strata_cpp.dll      the product ABI (src/capi.cpp)
+# strata_cpp_dev.dll  the same GGUF/quant code behind an inspect/dequant ABI for tests (dev_api.cpp), plus the
+#                     CUDA backend's gemv / moe_gemv wrappers (scd_*)
+
+# cuda.lib is the driver API import library (nvcuda.dll, in System32). NVRTC is NOT linked: it is loaded
+# by path at run time (src/nvrtc.cpp, port of cuda/nvrtc.rs), because its Windows DLL name carries the
+# CUDA version and a link-time import pins one toolkit.
+# /arch:AVX2 = Rust's target-cpu=native on an AVX2 CPU (the x86-64 build target). Without it the
+# cpu_moe.cpp integer kernels compile to their scalar fallback (SC_AVX2 0), ~10x slower per expert.
+cflags = /nologo /O2 /std:c++20 /EHsc /W4 /wd4100 /MD /arch:AVX2 /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX
+cuda_libs = cuda.lib advapi32.lib
+
+# The kernel source (kernels/tables.cuh, kernels/kernels.cu) embedded as byte arrays, so the DLLs carry the
+# text Strata compiles with NVRTC (cuda/mod.rs include_str!) without reading files at run time.
+rule embed
+  command = python tools/embed_kernels.py $out kTablesCuh=kernels/tables.cuh kKernelsCu=kernels/kernels.cu
+  description = embed kernel source $out
+
+rule dll_main
+  command = cl $cflags /LD /Fo:build_mx/obj/main/ /Fd:build_mx/obj/main/ $in /link /DLL /OUT:$out /IMPLIB:build_mx/capi.lib $cuda_libs
+  description = DLL $out
+
+rule dll_dev
+  command = cl $cflags /LD /Fo:build_mx/obj/dev/ /Fd:build_mx/obj/dev/ $in /link /DLL /OUT:$out /IMPLIB:build_mx/dev_api.lib $cuda_libs
+  description = DLL $out
+
+build build_mx/kernel_text.cpp: embed tools/embed_kernels.py kernels/tables.cuh kernels/kernels.cu
+
+build build_mx/strata_cpp.dll: dll_main src/capi.cpp src/nvrtc.cpp src/gguf.cpp src/quant.cpp $
+    src/config.cpp src/weights.cpp src/memory.cpp src/backend.cpp src/cuda_backend.cpp src/cuda_backend_ops.cpp src/cuda_backend_seq.cpp $
+    src/model.cpp src/expert_cache.cpp src/gpu_model.cpp src/prefill.cpp src/sampling.cpp src/cpu_moe.cpp src/cpu_worker.cpp $
+    build_mx/kernel_text.cpp $
+    | src/capi.h src/nvrtc.h src/backend.h src/cuda_backend.h src/model.h src/expert_cache.h src/gpu_model.h src/sampling.h
+build build_mx/strata_cpp_dev.dll: dll_dev src/dev_api.cpp src/gguf.cpp src/quant.cpp $
+    src/config.cpp src/weights.cpp src/memory.cpp src/nvrtc.cpp src/backend.cpp src/cuda_backend.cpp src/cuda_backend_ops.cpp src/cuda_backend_seq.cpp $
+    src/model.cpp src/expert_cache.cpp src/gpu_model.cpp src/prefill.cpp src/sampling.cpp src/cpu_moe.cpp src/cpu_worker.cpp $
+    build_mx/kernel_text.cpp $
+    | src/backend.h src/cuda_backend.h src/nvrtc.h src/model.h src/expert_cache.h src/gpu_model.h src/sampling.h
+
+# sc_score: the C++ twin of `rustingstrata score` (tools/sc_score.cpp), linked to the product DLL's import library.
+rule exe_tool
+  command = cl $cflags /Fo:build_mx/obj/tools/ /Fe:$out $in /link build_mx/capi.lib $cuda_libs
+  description = EXE $out
+
+build build_mx/sc_score.exe: exe_tool tools/sc_score.cpp | build_mx/strata_cpp.dll
+
+# sc_bench: the C++ twin of `rustingstrata bench` (tools/sc_bench.cpp), same product DLL.
+build build_mx/sc_bench.exe: exe_tool tools/sc_bench.cpp | build_mx/strata_cpp.dll
+
+default build_mx/strata_cpp.dll build_mx/strata_cpp_dev.dll build_mx/sc_score.exe build_mx/sc_bench.exe
