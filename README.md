@@ -39,11 +39,11 @@ the Rust reference dequantizers; MXFP4 is bit-exact against StrataFreet's `quant
   run time, not linked, so the toolkit is needed at run time as well as at build time. CUDA 13.x drops
   NVRTC support for Volta (sm_70); use 12.x if that is your GPU.
 - `ninja` on `PATH`, and Python 3 on `PATH` for the kernel-embedding build step.
-- NVIDIA GPU, Volta (sm_70) or newer. Kernels are compiled by NVRTC for the compute capability of the
-  device in use; the int8 tensor-core prefill path needs sm_80+. No Vulkan or CPU-only backend exists.
-- An x86-64 CPU with AVX2 is recommended: the build uses `/arch:AVX2`, which enables the AVX2 integer
-  expert kernels (about 10x faster than the scalar fallback). The binary still runs without AVX2 via the
-  scalar path.
+- An NVIDIA GPU. Kernels are compiled by NVRTC at run time for the compute capability of the device in
+  use; the int8 tensor-core prefill path needs sm_80+. It has only been tested on an RTX 5070 Ti (sm_120)
+  with CUDA 12.9. No Vulkan or CPU-only backend exists.
+- An x86-64 CPU with AVX2. The build uses `/arch:AVX2`, so the compiler may emit AVX2 instructions
+  anywhere in the DLL; it is not expected to run on a CPU without AVX2.
 
 ## Build
 

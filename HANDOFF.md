@@ -203,3 +203,19 @@ the port (recorded in `docs/DEVLOG.md`), not re-measured tonight.
    no remote was added and nothing was pushed.
 3. If the GPU numbers differ from `docs/DEVLOG.md`, update the README status table.
 4. Optional cleanup: bump `sc_version()` to 1.00 and remove the pre-existing `C4189` warnings.
+
+## Review pass (2026-11-22, after the EC14 build)
+
+- Every engine file in `src/`, `kernels/` and `tools/*.cpp` was compared byte for byte with
+  `stratafreet/native/strata_cpp`: identical, except one comment line in `src/tables_host.h`. The StrataFreet
+  folder was not modified.
+- A fresh `git clone` of the first commit built with `build.bat` and `build_cpu.bat` (`strata_cpp.dll`,
+  `strata_cpp_dev.dll`, `sc_score.exe`, `sc_bench.exe`, `strata_cpu_test.dll`).
+- CPU-only tests on that clone, GPU hidden with `CUDA_VISIBLE_DEVICES=`, `SC_MODEL_14B` = Qwen3.6-14B-A3B Q6_K:
+  `test_quant` PASS (26 types bit-exact), `test_gguf` PASS (zero mismatches), `test_weights` PASS,
+  `test_cpu_moe` PASS (58.7 us/expert median at 8 threads), `test_cpu_worker` ALL PASSED. With no variables
+  set, each of the five prints a SKIP line and exits 0.
+- Added `.gitattributes` (`*.bat text eol=crlf`). The batch files were committed with LF endings, which cmd
+  can mis-parse (labels, `goto`) on a checkout without CRLF conversion.
+- README: removed the unverified claims that the DLL runs without AVX2 and on Volta GPUs.
+- Not run: `test_sampler.py` and every GPU test (GPU busy).
